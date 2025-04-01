@@ -1,0 +1,13 @@
+fastapi 
+ibm-watson-machine-learning
+dotenv
+requests==2.31.0
+uvicorn
+langchain
+langgraph
+langchain_ibm
+langchain-community
+pydantic
+elasticsearch
+loguru
+psycopg2-binary
