@@ -103,26 +103,3 @@ class NL2SQLRetriever(BaseRetriever):
 
         return [Document(page_content=response)]
         
-
-if __name__ == "__main__":
-    import os
-    from dotenv import load_dotenv
-    from elasticsearch import Elasticsearch
-    # from langchain_elasticsearch import ElasticsearchRetriever
-    load_dotenv()
-    es_url = os.getenv("WXD_URL")
-    es_user = os.getenv("WXD_USERNAME")
-    es_password = os.getenv("WXD_PASSWORD")
-
-    es_client = Elasticsearch(hosts=es_url,
-                    ca_certs="http_ca.crt",
-                    basic_auth=(os.getenv("WXD_USERNAME"), os.getenv("WXD_PASSWORD")))
-    # logger.info(es_client.info())
-    retriever = WatsonxDiscoveryRetriever(client=es_client, index_name="multi-modal-rag")
-    
-    docs = retriever.invoke("that")
-    # logger.info(len(docs))
-
-
-    retriever = NL2SQLRetriever()
-    retriever.invoke("What is the scope 1 emmission of Supplier A")

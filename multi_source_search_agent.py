@@ -6,7 +6,7 @@ from loguru import logger
 from typing import Annotated, Sequence, Literal
 from typing_extensions import TypedDict
 
-from langchain_core.messages import BaseMessage, HumanMessage
+from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
 from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
@@ -17,17 +17,29 @@ from langchain_ibm import ChatWatsonx
 from langgraph.prebuilt import tools_condition
 from langgraph.graph import END, StateGraph, START
 from langgraph.prebuilt import ToolNode
+from langchain_core.tools import Tool
 
-
-from retriever_tools import create_wxd_retriever_tool
+from langchain_community.utilities import GoogleSerperAPIWrapper
+from retriever_tools import create_wxd_retriever_tool, create_sql_retriever_tool
 
 PROJECT_ID = os.getenv("PROJECT_ID")
 wx_url = "https://us-south.ml.cloud.ibm.com"
-
-retriever_tool = create_wxd_retriever_tool()
-tools = [retriever_tool]
 # llm_id = "meta-llama/llama-3-2-90b-vision-instruct"
 llm_id = "meta-llama/llama-3-3-70b-instruct"
+
+
+# Tools
+
+wxd_retriever_tool = create_wxd_retriever_tool("sustainability_document_search", "useful for searching sustainability reports")
+serper_search = GoogleSerperAPIWrapper()
+serper_search_tool = Tool(
+        name="news_search",
+        func=serper_search.run,
+        description="useful for when you need to find out news and info of the company via web search",
+    )
+
+sql_retriever_tool = create_sql_retriever_tool("sustainability_statistics_search", "useful for searching sustainability statistics for suppliers such as scope 1 and scope 2 carbon emmisions and revenue.")
+tools = [wxd_retriever_tool, serper_search_tool, sql_retriever_tool]
 
 
 # Define the agent's memory
@@ -36,8 +48,9 @@ class AgentState(TypedDict):
     # Default is to replace. add_messages says "append"
     messages: Annotated[Sequence[BaseMessage], add_messages]
 
+
 # Edges
-def grade_documents(state) -> Literal["generate", "rewrite"]:
+def grade_documents(state) -> Literal["generate", "agent"]:
     """
     Determines whether the retrieved documents are relevant to the question.
 
@@ -53,6 +66,7 @@ def grade_documents(state) -> Literal["generate", "rewrite"]:
     # Data model
     class grade(BaseModel):
         """Binary score for relevance check."""
+
         binary_score: str = Field(description="Relevance score 'yes' or 'no'")
 
     # LLM
@@ -95,20 +109,16 @@ def grade_documents(state) -> Literal["generate", "rewrite"]:
 
     score = scored_result.binary_score
 
-    if len(messages) > 9:
-        score = "yes"
-
     if score == "yes":
         logger.info("---DECISION: DOCS RELEVANT---")
         return "generate"
 
     else:
         logger.info("---DECISION: DOCS NOT RELEVANT---")
-        return "rewrite"
+        return "agent"
 
 
-### Nodes
-
+# Nodes
 def agent(state):
     """
     Invokes the agent model to generate a response based on the current state. Given
@@ -127,6 +137,7 @@ def agent(state):
     "max_new_tokens": 5000,
     "min_new_tokens": 1,
     }
+    query = messages[0]
 
     model = ChatWatsonx(
         model_id = llm_id,
@@ -134,54 +145,18 @@ def agent(state):
         project_id=PROJECT_ID,
         params=parameters,
     )
-    model = model.bind_tools(tools)
-    response = model.invoke(messages)
+
+    tools_used = []
+    for m in messages:
+        if hasattr(m, 'tool_call_id'):
+            logger.info(f"I have tried tool: {m.name}")
+            tools_used.append(m.name)
+
+    unused_tools = [t for t in tools if t.name not in tools_used]    
+    model = model.bind_tools(unused_tools)
+    logger.debug(f"unused tools: {[u.name for u in unused_tools]}")
+    response = model.invoke([query])
     # We return a list, because this will get added to the existing list
-    return {"messages": [response]}
-
-
-def rewrite(state):
-    """
-    Transform the query to produce a better question.
-
-    Args:
-        state (messages): The current state
-
-    Returns:
-        dict: The updated state with re-phrased question
-    """
-
-    logger.info("---TRANSFORM QUERY---")
-    messages = state["messages"]
-    question = messages[0].content
-
-    msg = [
-        HumanMessage(
-            content=f""" \n 
-    Look at the input and try to reason about the underlying semantic intent / meaning. \n 
-    Here is the initial question:
-    \n ------- \n
-    {question} 
-    \n ------- \n
-    Formulate an improved question, output the question only: """,
-        )
-    ]
-
-    # LLM
-    parameters = {
-    "decoding_method": "greedy",
-    "max_new_tokens": 5000,
-    "min_new_tokens": 1,
-    "tempurature": 0
-    }
-
-    model = ChatWatsonx(
-        model_id = llm_id,
-        url=wx_url,
-        project_id=PROJECT_ID,
-        params=parameters,
-    )
-    response = model.invoke(msg)
     return {"messages": [response]}
 
 
@@ -221,6 +196,10 @@ def generate(state):
         params=parameters,
     )
 
+    # Post-processing
+    def format_docs(docs):
+        return "\n\n".join(doc.page_content for doc in docs)
+
     # Chain
     rag_chain = prompt | llm | StrOutputParser()
 
@@ -228,20 +207,19 @@ def generate(state):
     response = rag_chain.invoke({"context": docs, "question": question})
     return {"messages": [response]}
 
-def query_revise(user_query : str):
+
+def query_multi_source(user_query:str):
     # Define a new graph
     workflow = StateGraph(AgentState)
 
     # Define the nodes we will cycle between
     workflow.add_node("agent", agent)  # agent
-    retrieve = ToolNode([retriever_tool])
-    workflow.add_node("retrieve", retrieve)  # retrieval
-    workflow.add_node("rewrite", rewrite)  # Re-writing the question
-    workflow.add_node("generate", generate)  # Generating a response after we know the documents are relevant
-    # Call agent node to decide to retrieve or not
+
+    retrieve = ToolNode(tools)
+    workflow.add_node("retrieve", retrieve)
+    workflow.add_node("generate", generate)
     workflow.add_edge(START, "agent")
 
-    # Decide whether to retrieve
     workflow.add_conditional_edges(
         "agent",
         # Assess agent decision
@@ -260,7 +238,7 @@ def query_revise(user_query : str):
         grade_documents,
     )
     workflow.add_edge("generate", END)
-    workflow.add_edge("rewrite", "agent")
+
 
     # Compile
     graph = workflow.compile()
@@ -275,6 +253,3 @@ def query_revise(user_query : str):
         logger.debug("\n---\n")
 
     return value['messages'][0]
-
-# print(query_revise("what's 1+1"))
-# print(query_revise("How does whitehaven reduce carbon emission"))

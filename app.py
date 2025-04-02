@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from simple_revise_agent import query_revise
+from multi_source_search_agent import query_multi_source
 
 app = FastAPI()
 
@@ -16,9 +17,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/reviseandretrieve/")
+@app.get("/retrievewithrevise/")
 async def revise_and_retrieve(query: str):
-    res = {"Agent Response": query_revise(query)}
+    res = query_revise(query)
+    return res
+
+@app.get("/retrievemultisource/")
+async def retrieve_multi_source(query: str):
+    res = query_multi_source(query)
     return res
 
 if __name__ == "__main__":

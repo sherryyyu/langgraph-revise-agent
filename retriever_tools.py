@@ -12,7 +12,8 @@ def create_wxd_retriever_tool(name = "wxd_retrieve_documents", description = "Se
     es_password = os.getenv("WXD_PASSWORD")
 
     es_client = Elasticsearch(hosts=es_url,
-                    ca_certs="http_ca.crt",
+                    # ca_certs="http_ca.crt",
+                    verify_certs = False,
                     basic_auth=(es_user, es_password))
     # logger.info(es_client.info())
     retriever = WatsonxDiscoveryRetriever(client=es_client, index_name="multi-modal-rag")
@@ -31,7 +32,3 @@ def create_sql_retriever_tool(name = "sql_retrieve_documents", description = "Se
         description,
     )
     return retriever_tool
-
-
-if __name__ == "__main__":
-    create_wxd_retriever_tool()
