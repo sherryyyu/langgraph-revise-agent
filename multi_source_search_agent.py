@@ -91,7 +91,8 @@ def grade_documents(state) -> Literal["generate", "agent"]:
         template="""You are a grader assessing relevance of a retrieved document to a user question. \n 
         Here is the retrieved document: \n\n {context} \n\n
         Here is the user question: {question} \n
-        If the document contains keyword(s) or semantic meaning related to the user question, grade it as relevant. If the document mentions it does not have data to answer the question, it means the document is not relevant. \n
+        If the document contains keyword(s) or semantic meaning related to the user question, grade it as relevant. \n
+        If the document mentions it has no data to answer the question or if the data is not directly available to answer the user question, it means the document is not relevant and grade it as 'no'. \n
         Give a binary score 'yes' or 'no' score to indicate whether the document is relevant to the question.""",
         input_variables=["context", "question"],
     )
@@ -108,6 +109,9 @@ def grade_documents(state) -> Literal["generate", "agent"]:
     scored_result = chain.invoke({"question": question, "context": docs})
 
     score = scored_result.binary_score
+
+    if len(messages) > 12:
+        score = "yes"
 
     if score == "yes":
         logger.info("---DECISION: DOCS RELEVANT---")
@@ -152,7 +156,10 @@ def agent(state):
             logger.info(f"I have tried tool: {m.name}")
             tools_used.append(m.name)
 
-    unused_tools = [t for t in tools if t.name not in tools_used]    
+    unused_tools = [t for t in tools if t.name not in tools_used] 
+    if len(unused_tools) < 1:
+        unused_tools = [serper_search_tool]
+
     model = model.bind_tools(unused_tools)
     logger.debug(f"unused tools: {[u.name for u in unused_tools]}")
     response = model.invoke([query])
